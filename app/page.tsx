@@ -124,7 +124,7 @@ export default function Home() {
             {screenshot && (
               <div className="rounded-lg overflow-hidden border border-neutral-800">
                 <div className="px-4 py-2 bg-neutral-900 border-b border-neutral-800 text-xs text-neutral-400 uppercase tracking-wider">
-                  Screenshot · 1280×800
+                  Screenshot · full page
                 </div>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
