@@ -28,6 +28,35 @@ type Analysis = {
 type Status = "idle" | "loading" | "done" | "error";
 
 const MAX_FILE_BYTES = 4_500_000; // ~4.5MB — Netlify Function payload cap is ~6MB after base64
+const MAX_IMAGE_DIMENSION = 7800; // Claude vision rejects anything > 8000px on any side
+
+async function resizeForClaude(file: File, maxDim: number): Promise<string> {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error("File read failed"));
+    reader.readAsDataURL(file);
+  });
+
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = () => reject(new Error("Image decode failed"));
+    im.src = dataUrl;
+  });
+
+  const longest = Math.max(img.width, img.height);
+  if (longest <= maxDim) return dataUrl;
+
+  const scale = maxDim / longest;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(img.width * scale);
+  canvas.height = Math.round(img.height * scale);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas not supported in this browser");
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.9);
+}
 
 export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -44,7 +73,7 @@ export default function Home() {
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [errors, setErrors] = useState<{ scrape?: string; analysis?: string }>({});
 
-  function handleFile(f: File) {
+  async function handleFile(f: File) {
     setFileError(null);
     if (!f.type.startsWith("image/")) {
       setFileError("File must be an image (PNG, JPEG, or WebP).");
@@ -57,10 +86,13 @@ export default function Home() {
       return;
     }
     setFile(f);
-    const reader = new FileReader();
-    reader.onload = () => setFilePreview(reader.result as string);
-    reader.onerror = () => setFileError("Could not read file.");
-    reader.readAsDataURL(f);
+    try {
+      const processed = await resizeForClaude(f, MAX_IMAGE_DIMENSION);
+      setFilePreview(processed);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Could not read file";
+      setFileError(message);
+    }
   }
 
   function clearFile() {
