@@ -2,12 +2,10 @@
 // Visit /api/health on your deployed site after adding env vars in Netlify.
 
 export async function GET() {
-  const status = {
-    anthropic: Boolean(process.env.ANTHROPIC_API_KEY),
-    screenshotone: Boolean(process.env.SCREENSHOTONE_ACCESS_KEY),
-    firecrawl: Boolean(process.env.FIRECRAWL_API_KEY),
+  return Response.json({
+    anthropic_len: process.env.ANTHROPIC_API_KEY?.length ?? 0,
+    screenshotone_len: process.env.SCREENSHOTONE_ACCESS_KEY?.length ?? 0,
+    firecrawl_len: process.env.FIRECRAWL_API_KEY?.length ?? 0,
     timestamp: new Date().toISOString(),
-  };
-
-  return Response.json(status);
+  });
 }
