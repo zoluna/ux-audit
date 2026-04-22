@@ -30,16 +30,16 @@ export async function POST(request: Request) {
       viewport_width: "1280",
       viewport_height: "800",
       device_scale_factor: "1",
-      format: "png",
+      format: "jpeg",
+      image_quality: "82",
       full_page: "true",
-      full_page_max_height: "6000",
-      full_page_scroll: "true",
+      full_page_max_height: "3000",
       block_ads: "true",
       block_cookie_banners: "true",
       block_chats: "true",
       cache: "true",
       cache_ttl: "86400",
-      timeout: "20",
+      timeout: "8",
     });
 
     const apiUrl = `https://api.screenshotone.com/take?${params.toString()}`;
@@ -58,9 +58,10 @@ export async function POST(request: Request) {
 
     const arrayBuffer = await response.arrayBuffer();
     const base64 = Buffer.from(arrayBuffer).toString("base64");
+    const contentType = response.headers.get("content-type") || "image/jpeg";
 
     return Response.json({
-      image: `data:image/png;base64,${base64}`,
+      image: `data:${contentType};base64,${base64}`,
       bytes: arrayBuffer.byteLength,
     });
   } catch (e) {
