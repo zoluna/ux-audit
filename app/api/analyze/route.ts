@@ -1,9 +1,10 @@
 // POST /api/analyze
-// Body: { url, screenshot (data URL), markdown, title, description }
-// Returns: { heuristic, score, summary, findings, usage }
+// Body: { heuristic, url, screenshot, markdown, title, description }
+// Returns: { heuristic, heuristic_label, score, summary, findings, usage }
 //
-// Single-heuristic analysis (visual hierarchy) using Claude vision.
-// Becomes the template for the multi-agent expansion in Session 4.
+// Dispatches the request to one of five specialist prompts based on `heuristic`.
+// The client fires 5 of these in parallel — one per heuristic — so each gets
+// its own Netlify Function timeout budget and results stream in independently.
 
 import Anthropic from "@anthropic-ai/sdk";
 
@@ -13,6 +14,8 @@ export const maxDuration = 26;
 const client = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
+
+// ---------- Types ----------
 
 type Severity = "critical" | "major" | "minor";
 
@@ -29,33 +32,23 @@ type Analysis = {
   findings: Finding[];
 };
 
-const SYSTEM_PROMPT = `You are a senior UX designer with 12+ years of experience auditing web interfaces. You give critique that is sharp, specific, and actionable — never generic. You ground every finding in something concretely visible in the screenshot or content provided.`;
+type Heuristic =
+  | "visual_hierarchy"
+  | "microcopy"
+  | "accessibility"
+  | "mobile_responsiveness"
+  | "conversion";
 
-function buildUserPrompt(args: {
+type Context = {
   url: string;
   title: string;
   description: string;
   markdown: string;
-}): string {
-  const truncated = args.markdown.slice(0, 6000);
+};
 
-  return `Analyze the provided website for **VISUAL HIERARCHY** specifically. Evaluate:
+// ---------- Shared prompt components ----------
 
-- Whether the most important element on the page (typically the primary value proposition or hero CTA) is visually dominant
-- Whether secondary and tertiary content recedes appropriately
-- Whether spacing creates clear, scannable groupings
-- Whether typography weight, size, and color establish an unambiguous reading order
-- Whether the primary call-to-action is unmistakable
-
-Context:
-- URL: ${args.url || "(uploaded screenshot, no URL provided)"}
-- Page title: ${args.title || "(none provided)"}
-- Page description: ${args.description || "(none provided)"}
-
-Page content excerpt (markdown):
-${truncated || "(no extracted content)"}
-
-Return your analysis as a JSON object with this exact shape:
+const JSON_SCHEMA_BLOCK = `Return your analysis as a JSON object with this exact shape:
 
 {
   "score": <integer 0-100, where 100 is exemplary>,
@@ -64,7 +57,7 @@ Return your analysis as a JSON object with this exact shape:
     {
       "severity": "critical" | "major" | "minor",
       "issue": "<short title, max 10 words>",
-      "evidence": "<specific reference to what you observe in the screenshot>",
+      "evidence": "<specific reference to what you observe>",
       "recommendation": "<concrete actionable fix in 1-2 sentences>"
     }
   ]
@@ -73,31 +66,140 @@ Return your analysis as a JSON object with this exact shape:
 Rules:
 - Return ONLY the JSON. No preamble, no markdown code fences, no explanation.
 - Aim for 3-6 findings, ordered by severity (critical first).
-- Every finding must reference something specific you can see, not generic UX advice.
-- "critical" = breaks the page's primary purpose. "major" = noticeably degrades the experience. "minor" = polish.`;
+- Every finding must reference something specific you can see or infer from the material, not generic UX advice.
+- "critical" = breaks the interface's primary purpose. "major" = noticeably degrades the experience. "minor" = polish.`;
+
+function buildContextBlock(ctx: Context): string {
+  const truncated = ctx.markdown.slice(0, 6000);
+  return `Context:
+- URL: ${ctx.url || "(uploaded screenshot, no URL provided)"}
+- Page title: ${ctx.title || "(none provided)"}
+- Page description: ${ctx.description || "(none provided)"}
+
+Page content excerpt (markdown):
+${truncated || "(no extracted content)"}`;
 }
 
+// ---------- Heuristic configurations ----------
+
+const HEURISTICS: Record<
+  Heuristic,
+  {
+    label: string;
+    systemPrompt: string;
+    buildAnalysisPrompt: (ctx: Context) => string;
+  }
+> = {
+  visual_hierarchy: {
+    label: "Visual Hierarchy",
+    systemPrompt:
+      "You are a senior visual designer with 12+ years of experience auditing interface hierarchy. Your critique is sharp, specific, and grounded in what you actually observe in the image.",
+    buildAnalysisPrompt: (ctx) => `Analyze the provided interface for VISUAL HIERARCHY:
+- Whether the most important element (primary value proposition or hero CTA) is visually dominant
+- Whether secondary and tertiary content recedes appropriately
+- Whether whitespace creates clear, scannable groupings
+- Whether typography weight, size, and color establish an unambiguous reading order
+- Whether the primary call-to-action is unmistakable
+
+${buildContextBlock(ctx)}
+
+${JSON_SCHEMA_BLOCK}`,
+  },
+
+  microcopy: {
+    label: "Microcopy & Clarity",
+    systemPrompt:
+      "You are a senior UX copywriter with a decade of experience sharpening product language. You spot jargon, empty phrases, vague CTAs, and unclear value propositions. Your critique is grounded in specific words you can see on the page.",
+    buildAnalysisPrompt: (ctx) => `Analyze the provided interface for MICROCOPY & CLARITY:
+- Whether the primary value proposition is understandable in under 5 seconds
+- Whether headlines are scannable and written in active voice
+- Whether button and CTA labels are specific and action-oriented (flag generic "Learn more" or "Submit")
+- Whether form labels, helper text, and any visible error states are clear
+- Whether tone is consistent and free of jargon, empty buzzwords, and hedging
+
+${buildContextBlock(ctx)}
+
+${JSON_SCHEMA_BLOCK}`,
+  },
+
+  accessibility: {
+    label: "Accessibility",
+    systemPrompt:
+      "You are a senior accessibility specialist with deep knowledge of WCAG 2.2 and inclusive design. You assess interfaces for barriers that exclude users with visual, motor, cognitive, or situational impairments. You ground every finding in something specific you can see.",
+    buildAnalysisPrompt: (ctx) => `Analyze the provided interface for ACCESSIBILITY issues:
+- Color contrast of body text, headings, and interactive elements against their backgrounds (reference WCAG AA: 4.5:1 for body text, 3:1 for large text and UI components)
+- Text legibility (size, weight, line height)
+- Apparent hit target sizes for buttons and interactive elements (reference 44×44px minimum)
+- Reliance on color alone to convey meaning or state
+- Icon-only buttons without visible labels
+- Semantic structure implied by the visual layout (clear landmarks, heading hierarchy)
+
+${buildContextBlock(ctx)}
+
+${JSON_SCHEMA_BLOCK}`,
+  },
+
+  mobile_responsiveness: {
+    label: "Mobile Responsiveness",
+    systemPrompt:
+      "You are a senior mobile UX designer with deep experience shipping responsive web products. You assess whether a desktop design will translate cleanly to a mobile viewport, anticipating layout breaks, touch friction, and performance issues.",
+    buildAnalysisPrompt: (ctx) => `Analyze the provided interface for MOBILE RESPONSIVENESS risks. You're viewing a desktop layout; infer how this design is likely to behave on a 375px-wide mobile viewport:
+- Will multi-column layouts collapse sensibly?
+- Are tap targets likely to meet 44×44px at mobile scale?
+- Will text remain legible when scaled for small screens?
+- Will sticky headers, modals, or side panels create friction on a phone?
+- Will the primary CTA remain accessible above the fold on mobile?
+- Are image- or video-heavy elements likely to be performance-painful on mobile?
+
+${buildContextBlock(ctx)}
+
+${JSON_SCHEMA_BLOCK}`,
+  },
+
+  conversion: {
+    label: "Conversion Patterns",
+    systemPrompt:
+      "You are a senior conversion rate optimization specialist. You audit landing pages and product interfaces for friction, weak CTAs, missing trust signals, and patterns that hurt or help conversion. You are specific and grounded, and you call out dark patterns rather than endorse them.",
+    buildAnalysisPrompt: (ctx) => `Analyze the provided interface for CONVERSION PATTERN issues:
+- Is the primary desired action unmistakable and specific (flag a generic "Get started" for an unclear offer)?
+- Are trust signals present where they matter (testimonials, customer logos, security badges, third-party validation)?
+- What sources of friction exist (required fields, forced signups, unclear next step, intrusive modals)?
+- Is social proof leveraged authentically (specific quotes and names vs. generic praise)?
+- Are urgency or scarcity cues, if present, honest and not manipulative dark patterns?
+
+${buildContextBlock(ctx)}
+
+${JSON_SCHEMA_BLOCK}`,
+  },
+};
+
+// ---------- Parsing ----------
+
 function parseAnalysis(raw: string): Analysis {
-  // Try direct parse first.
   try {
     return JSON.parse(raw) as Analysis;
   } catch {
-    // Fall back: extract from a JSON code block.
     const fenced = raw.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
     if (fenced) return JSON.parse(fenced[1]) as Analysis;
-
-    // Last resort: grab the first {...} blob.
     const loose = raw.match(/\{[\s\S]*\}/);
     if (loose) return JSON.parse(loose[0]) as Analysis;
-
     throw new Error("Could not parse analysis JSON from model response");
   }
 }
 
+// ---------- Handler ----------
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { url = "", screenshot, markdown = "", title = "", description = "" } = body;
+    const {
+      heuristic = "visual_hierarchy",
+      url = "",
+      screenshot,
+      markdown = "",
+      title = "",
+      description = "",
+    } = body;
 
     if (!screenshot) {
       return Response.json(
@@ -112,7 +214,14 @@ export async function POST(request: Request) {
       );
     }
 
-    // Strip the "data:image/png;base64," prefix.
+    const config = HEURISTICS[heuristic as Heuristic];
+    if (!config) {
+      return Response.json(
+        { error: `Unknown heuristic: ${heuristic}` },
+        { status: 400 }
+      );
+    }
+
     const match = (screenshot as string).match(
       /^data:image\/(png|jpeg|webp);base64,(.+)$/
     );
@@ -125,12 +234,12 @@ export async function POST(request: Request) {
     const mediaType = `image/${match[1]}` as "image/png" | "image/jpeg" | "image/webp";
     const base64Data = match[2];
 
-    const userPrompt = buildUserPrompt({ url, title, description, markdown });
+    const userPrompt = config.buildAnalysisPrompt({ url, title, description, markdown });
 
     const response = await client.messages.create({
       model: "claude-sonnet-4-5",
       max_tokens: 2048,
-      system: SYSTEM_PROMPT,
+      system: config.systemPrompt,
       messages: [
         {
           role: "user",
@@ -169,8 +278,8 @@ export async function POST(request: Request) {
     }
 
     return Response.json({
-      heuristic: "visual_hierarchy",
-      heuristic_label: "Visual Hierarchy",
+      heuristic,
+      heuristic_label: config.label,
       ...analysis,
       usage: {
         input_tokens: response.usage.input_tokens,

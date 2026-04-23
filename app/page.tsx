@@ -2,6 +2,8 @@
 
 import { useRef, useState } from "react";
 
+// ---------- Types ----------
+
 type ScrapeResult = {
   markdown: string;
   title: string;
@@ -27,8 +29,48 @@ type Analysis = {
 
 type Status = "idle" | "loading" | "done" | "error";
 
-const MAX_FILE_BYTES = 4_500_000; // ~4.5MB — Netlify Function payload cap is ~6MB after base64
-const MAX_IMAGE_DIMENSION = 7800; // Claude vision rejects anything > 8000px on any side
+type Heuristic =
+  | "visual_hierarchy"
+  | "microcopy"
+  | "accessibility"
+  | "mobile_responsiveness"
+  | "conversion";
+
+type AgentState = {
+  status: Status;
+  analysis: Analysis | null;
+  error: string | null;
+};
+
+// ---------- Constants ----------
+
+const HEURISTICS_ORDER: Heuristic[] = [
+  "visual_hierarchy",
+  "microcopy",
+  "accessibility",
+  "mobile_responsiveness",
+  "conversion",
+];
+
+const HEURISTIC_LABELS: Record<Heuristic, string> = {
+  visual_hierarchy: "Visual Hierarchy",
+  microcopy: "Microcopy",
+  accessibility: "Accessibility",
+  mobile_responsiveness: "Mobile",
+  conversion: "Conversion",
+};
+
+const MAX_FILE_BYTES = 4_500_000;
+const MAX_IMAGE_DIMENSION = 7800;
+
+// ---------- Helpers ----------
+
+function initialAgents(): Record<Heuristic, AgentState> {
+  const entries = HEURISTICS_ORDER.map(
+    (h): [Heuristic, AgentState] => [h, { status: "idle", analysis: null, error: null }]
+  );
+  return Object.fromEntries(entries) as Record<Heuristic, AgentState>;
+}
 
 async function resizeForClaude(file: File, maxDim: number): Promise<string> {
   const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -58,6 +100,8 @@ async function resizeForClaude(file: File, maxDim: number): Promise<string> {
   return canvas.toDataURL("image/jpeg", 0.9);
 }
 
+// ---------- Page ----------
+
 export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -67,11 +111,12 @@ export default function Home() {
   const [dragging, setDragging] = useState(false);
 
   const [url, setUrl] = useState("");
+
   const [scrapeStatus, setScrapeStatus] = useState<Status>("idle");
-  const [analysisStatus, setAnalysisStatus] = useState<Status>("idle");
   const [scrape, setScrape] = useState<ScrapeResult | null>(null);
-  const [analysis, setAnalysis] = useState<Analysis | null>(null);
-  const [errors, setErrors] = useState<{ scrape?: string; analysis?: string }>({});
+  const [scrapeError, setScrapeError] = useState<string | null>(null);
+
+  const [agents, setAgents] = useState<Record<Heuristic, AgentState>>(initialAgents());
 
   async function handleFile(f: File) {
     setFileError(null);
@@ -108,86 +153,99 @@ export default function Home() {
 
     const trimmedUrl = url.trim();
 
+    // Reset everything.
     setScrape(null);
-    setAnalysis(null);
-    setErrors({});
+    setScrapeError(null);
     setScrapeStatus(trimmedUrl ? "loading" : "idle");
-    setAnalysisStatus("loading");
+    setAgents(() => {
+      const next = initialAgents();
+      HEURISTICS_ORDER.forEach((h) => {
+        next[h] = { status: "loading", analysis: null, error: null };
+      });
+      return next;
+    });
 
-    const scrapePromise: Promise<ScrapeResult | null> = trimmedUrl
-      ? (async () => {
-          const r = await fetch("/api/scrape", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url: trimmedUrl }),
-          });
-          const data = await r.json();
-          if (!r.ok) throw new Error(data.error ?? "Scrape failed");
-          setScrape(data);
-          setScrapeStatus("done");
-          return data as ScrapeResult;
-        })()
-      : Promise.resolve(null);
+    // Step 1: scrape for context if a URL was provided. Agents still run if this fails.
+    let scrapeData: ScrapeResult | null = null;
+    if (trimmedUrl) {
+      try {
+        const r = await fetch("/api/scrape", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: trimmedUrl }),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error ?? "Scrape failed");
+        scrapeData = d as ScrapeResult;
+        setScrape(scrapeData);
+        setScrapeStatus("done");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Scrape failed";
+        setScrapeError(message);
+        setScrapeStatus("error");
+      }
+    }
 
-    const analyzePromise: Promise<Analysis> = (async () => {
-      const r = await fetch("/api/analyze", {
+    // Step 2: fire all 5 specialist agents in parallel. Each updates its own state.
+    HEURISTICS_ORDER.forEach((heuristic) => {
+      fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          heuristic,
           url: trimmedUrl,
           screenshot: filePreview,
+          markdown: scrapeData?.markdown ?? "",
+          title: scrapeData?.title ?? "",
+          description: scrapeData?.description ?? "",
         }),
-      });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.error ?? "Analysis failed");
-      setAnalysis(data);
-      setAnalysisStatus("done");
-      return data as Analysis;
-    })();
-
-    const [scrapeResult, analyzeResult] = await Promise.allSettled([
-      scrapePromise,
-      analyzePromise,
-    ]);
-
-    if (scrapeResult.status === "rejected") {
-      setErrors((p) => ({
-        ...p,
-        scrape: scrapeResult.reason?.message ?? "Scrape failed",
-      }));
-      setScrapeStatus("error");
-    }
-    if (analyzeResult.status === "rejected") {
-      setErrors((p) => ({
-        ...p,
-        analysis: analyzeResult.reason?.message ?? "Analysis failed",
-      }));
-      setAnalysisStatus("error");
-    }
+      })
+        .then(async (r) => {
+          const data = await r.json();
+          if (!r.ok) throw new Error(data.error ?? "Analysis failed");
+          setAgents((prev) => ({
+            ...prev,
+            [heuristic]: { status: "done", analysis: data as Analysis, error: null },
+          }));
+        })
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : "Failed";
+          setAgents((prev) => ({
+            ...prev,
+            [heuristic]: { status: "error", analysis: null, error: message },
+          }));
+        });
+    });
   }
 
-  const isRunning =
-    scrapeStatus === "loading" || analysisStatus === "loading";
-  const hasResults =
-    scrapeStatus !== "idle" || analysisStatus !== "idle";
+  const anyAgentLoading = HEURISTICS_ORDER.some((h) => agents[h].status === "loading");
+  const isRunning = anyAgentLoading || scrapeStatus === "loading";
+  const hasResults = HEURISTICS_ORDER.some((h) => agents[h].status !== "idle");
   const canSubmit = !!filePreview && !isRunning;
+
+  const completedScores = HEURISTICS_ORDER
+    .map((h) => agents[h].analysis?.score)
+    .filter((s): s is number => typeof s === "number");
+  const overallScore =
+    completedScores.length > 0
+      ? Math.round(completedScores.reduce((a, b) => a + b, 0) / completedScores.length)
+      : null;
 
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-100 px-6 py-16">
       <div className="w-full max-w-3xl mx-auto">
         <header className="mb-10">
           <p className="text-xs uppercase tracking-[0.2em] text-neutral-500 mb-3">
-            UX Audit · v0.4
+            UX Audit · v0.5
           </p>
           <h1 className="text-4xl md:text-5xl font-semibold tracking-tight mb-4">
-            Audit any UI in under a minute.
+            Five specialists. One screenshot. One minute.
           </h1>
           <p className="text-neutral-400 text-lg leading-relaxed">
             Drop a screenshot of any interface — live website, internal
-            dashboard, Figma mockup, design export. A panel of AI specialists
-            reviews it for visual hierarchy, microcopy, accessibility, mobile
-            responsiveness, and conversion patterns — then hands you a
-            prioritized report.
+            dashboard, Figma mockup. Five AI specialists review it in parallel
+            for visual hierarchy, microcopy, accessibility, mobile readiness,
+            and conversion patterns.
           </p>
         </header>
 
@@ -235,9 +293,7 @@ export default function Home() {
                   className="w-20 h-20 object-cover rounded border border-neutral-800 shrink-0"
                 />
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm text-neutral-200 truncate">
-                    {file?.name}
-                  </p>
+                  <p className="text-sm text-neutral-200 truncate">{file?.name}</p>
                   <p className="text-xs text-neutral-500 mt-1">
                     {file && `${(file.size / 1000).toFixed(0)} KB`}
                   </p>
@@ -266,9 +322,7 @@ export default function Home() {
             )}
           </div>
 
-          {fileError && (
-            <p className="text-xs text-red-400">{fileError}</p>
-          )}
+          {fileError && <p className="text-xs text-red-400">{fileError}</p>}
 
           <input
             type="url"
@@ -284,33 +338,41 @@ export default function Home() {
             disabled={!canSubmit}
             className="w-full sm:w-auto px-6 py-3 rounded-lg bg-white text-neutral-950 font-medium hover:bg-neutral-200 transition disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {isRunning ? "Working…" : "Run audit"}
+            {isRunning ? "Specialists reviewing…" : "Run audit"}
           </button>
         </form>
 
         {hasResults && (
           <section className="mt-10 space-y-6">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {scrapeStatus !== "idle" && (
-                <StatusCard
-                  label="Extracting content"
-                  status={scrapeStatus}
-                  error={errors.scrape}
-                />
-              )}
-              <StatusCard
-                label="Analyzing hierarchy"
-                status={analysisStatus}
-                error={errors.analysis}
-              />
-            </div>
+            <Scorecard agents={agents} overall={overallScore} />
 
-            {analysis && <AnalysisCard analysis={analysis} />}
+            {scrapeStatus !== "idle" && (
+              <div className="text-xs text-neutral-500 flex items-center gap-2">
+                <span>
+                  Context:{" "}
+                  {scrapeStatus === "loading" && "fetching page content…"}
+                  {scrapeStatus === "done" && `fetched ${scrape?.markdown.length.toLocaleString()} chars`}
+                  {scrapeStatus === "error" && (
+                    <span className="text-amber-400">
+                      scrape failed ({scrapeError}) — agents running on screenshot alone
+                    </span>
+                  )}
+                </span>
+              </div>
+            )}
+
+            <div className="space-y-4">
+              {HEURISTICS_ORDER.map((h) => (
+                <div key={h} id={`agent-${h}`}>
+                  <AgentCard state={agents[h]} label={HEURISTIC_LABELS[h]} />
+                </div>
+              ))}
+            </div>
 
             {scrape && (
               <details className="rounded-lg border border-neutral-800 overflow-hidden">
                 <summary className="px-4 py-2 bg-neutral-900 border-b border-neutral-800 text-xs text-neutral-400 uppercase tracking-wider cursor-pointer hover:text-neutral-200">
-                  Scraped content · {scrape.markdown.length.toLocaleString()} chars · click to expand
+                  Scraped content · click to expand
                 </summary>
                 <div className="p-4 space-y-4">
                   {scrape.title && (
@@ -326,9 +388,7 @@ export default function Home() {
                       <p className="text-xs text-neutral-500 uppercase tracking-wider mb-1">
                         Description
                       </p>
-                      <p className="text-neutral-300 text-sm">
-                        {scrape.description}
-                      </p>
+                      <p className="text-neutral-300 text-sm">{scrape.description}</p>
                     </div>
                   )}
                   <pre className="text-xs text-neutral-400 bg-neutral-950 border border-neutral-800 rounded p-3 max-h-80 overflow-auto whitespace-pre-wrap font-mono">
@@ -349,38 +409,128 @@ export default function Home() {
   );
 }
 
-function StatusCard({
-  label,
-  status,
-  error,
-}: {
-  label: string;
-  status: Status;
-  error?: string;
-}) {
-  const config: Record<Status, { color: string; icon: string; pulse: boolean }> = {
-    idle: { color: "text-neutral-600", icon: "·", pulse: false },
-    loading: { color: "text-amber-400", icon: "•", pulse: true },
-    done: { color: "text-emerald-400", icon: "✓", pulse: false },
-    error: { color: "text-red-400", icon: "✗", pulse: false },
-  };
-  const { color, icon, pulse } = config[status];
+// ---------- Components ----------
 
+function Scorecard({
+  agents,
+  overall,
+}: {
+  agents: Record<Heuristic, AgentState>;
+  overall: number | null;
+}) {
   return (
-    <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-      <div className="flex items-center gap-2">
-        <span
-          className={`text-base leading-none ${color} ${pulse ? "animate-pulse" : ""}`}
-        >
-          {icon}
-        </span>
-        <span className="text-sm text-neutral-200">{label}</span>
+    <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-5">
+      <div className="flex items-center justify-between gap-4 mb-4 flex-wrap">
+        <p className="text-xs text-neutral-500 uppercase tracking-[0.15em]">
+          Overall
+        </p>
+        <div className="flex items-center gap-3">
+          <span className="text-3xl font-semibold tabular-nums text-neutral-100">
+            {overall !== null ? overall : "—"}
+          </span>
+          <span className="text-xs text-neutral-500">/ 100</span>
+        </div>
       </div>
-      {error && (
-        <p className="mt-2 text-xs text-red-400 break-words">{error}</p>
-      )}
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        {HEURISTICS_ORDER.map((h) => (
+          <button
+            key={h}
+            type="button"
+            onClick={() =>
+              document
+                .getElementById(`agent-${h}`)
+                ?.scrollIntoView({ behavior: "smooth", block: "start" })
+            }
+            className="flex flex-col items-center gap-1 py-2 rounded hover:bg-neutral-800/50 transition"
+          >
+            <ScoreDot state={agents[h]} />
+            <span className="text-[10px] text-neutral-400 uppercase tracking-wider text-center">
+              {HEURISTIC_LABELS[h]}
+            </span>
+          </button>
+        ))}
+      </div>
     </div>
   );
+}
+
+function ScoreDot({ state }: { state: AgentState }) {
+  if (state.status === "loading") {
+    return (
+      <div className="w-12 h-12 rounded-full border-2 border-dashed border-neutral-700 animate-pulse" />
+    );
+  }
+  if (state.status === "error") {
+    return (
+      <div className="w-12 h-12 rounded-full bg-neutral-950 ring-2 ring-red-500/40 flex items-center justify-center">
+        <span className="text-red-300 text-lg">!</span>
+      </div>
+    );
+  }
+  if (state.status === "done" && state.analysis) {
+    const score = state.analysis.score;
+    const tier =
+      score >= 85
+        ? { ring: "ring-emerald-500/50", text: "text-emerald-300" }
+        : score >= 70
+        ? { ring: "ring-green-500/50", text: "text-green-300" }
+        : score >= 55
+        ? { ring: "ring-amber-500/50", text: "text-amber-300" }
+        : score >= 40
+        ? { ring: "ring-orange-500/50", text: "text-orange-300" }
+        : { ring: "ring-red-500/50", text: "text-red-300" };
+    return (
+      <div
+        className={`w-12 h-12 rounded-full bg-neutral-950 ring-2 ${tier.ring} flex items-center justify-center`}
+      >
+        <span className={`text-base font-semibold ${tier.text} tabular-nums`}>
+          {score}
+        </span>
+      </div>
+    );
+  }
+  return <div className="w-12 h-12 rounded-full border-2 border-neutral-800" />;
+}
+
+function AgentCard({ state, label }: { state: AgentState; label: string }) {
+  if (state.status === "loading") {
+    return (
+      <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-5">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-xs text-neutral-500 uppercase tracking-[0.15em] mb-1">
+              Specialist
+            </p>
+            <h2 className="text-lg text-neutral-100 font-medium">{label}</h2>
+          </div>
+          <span className="text-xs text-amber-400 animate-pulse">Reviewing…</span>
+        </div>
+        <div className="mt-4 space-y-2">
+          <div className="h-3 bg-neutral-800 rounded animate-pulse" />
+          <div className="h-3 bg-neutral-800 rounded animate-pulse w-5/6" />
+          <div className="h-3 bg-neutral-800 rounded animate-pulse w-4/6" />
+        </div>
+      </div>
+    );
+  }
+
+  if (state.status === "error") {
+    return (
+      <div className="rounded-lg border border-red-900/60 bg-red-950/30 p-5">
+        <div className="flex items-center justify-between gap-4 mb-2">
+          <h2 className="text-lg text-red-200 font-medium">{label}</h2>
+          <span className="text-xs text-red-300">Failed</span>
+        </div>
+        <p className="text-xs text-red-300 break-words">{state.error}</p>
+      </div>
+    );
+  }
+
+  if (state.status === "done" && state.analysis) {
+    return <AnalysisCard analysis={state.analysis} />;
+  }
+
+  return null;
 }
 
 function AnalysisCard({ analysis }: { analysis: Analysis }) {
@@ -389,7 +539,7 @@ function AnalysisCard({ analysis }: { analysis: Analysis }) {
       <div className="px-5 py-4 bg-neutral-900 border-b border-neutral-800 flex items-start justify-between gap-4">
         <div>
           <p className="text-xs text-neutral-500 uppercase tracking-[0.15em] mb-1">
-            Heuristic
+            Specialist
           </p>
           <h2 className="text-lg text-neutral-100 font-medium">
             {analysis.heuristic_label}
