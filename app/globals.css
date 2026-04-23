@@ -1,26 +1,143 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #07030f;
+  --foreground: #f7f2ff;
+  --muted: #b896e9;
+  --panel: rgba(20, 10, 36, 0.6);
+  --panel-strong: rgba(28, 14, 49, 0.82);
+  --panel-border: rgba(211, 169, 255, 0.16);
+  --shadow: 0 30px 120px rgba(8, 2, 18, 0.55);
+  --font-display:
+    "Avenir Next", "Segoe UI", "Helvetica Neue", "Arial Nova", "Arial", sans-serif;
+  --font-mono:
+    "SF Mono", "JetBrains Mono", "IBM Plex Mono", "Menlo", "Monaco", monospace;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-display);
+  --font-mono: var(--font-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 body {
-  background: var(--background);
+  background:
+    radial-gradient(circle at top, rgba(177, 101, 234, 0.18), transparent 30%),
+    radial-gradient(circle at bottom right, rgba(200, 145, 255, 0.14), transparent 28%),
+    linear-gradient(180deg, #05020d 0%, #0c0618 42%, #140920 100%);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-display), sans-serif;
+}
+
+::selection {
+  background: rgba(186, 119, 245, 0.35);
+  color: #fff;
+}
+
+a,
+button,
+input,
+textarea,
+summary {
+  transition:
+    color 160ms ease,
+    border-color 160ms ease,
+    background-color 160ms ease,
+    opacity 160ms ease,
+    transform 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.glass-panel {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
+    var(--panel);
+  border: 1px solid var(--panel-border);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(24px);
+}
+
+.noise-overlay {
+  position: absolute;
+  inset: 0;
+  opacity: 0.14;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 120px 120px;
+  mask-image: radial-gradient(circle at center, black 35%, transparent 80%);
+}
+
+.ambient-grid {
+  background-image:
+    linear-gradient(rgba(196, 153, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(196, 153, 255, 0.05) 1px, transparent 1px);
+  background-size: 64px 64px;
+}
+
+.floating-orb {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(24px);
+  opacity: 0.9;
+  animation: drift 16s ease-in-out infinite;
+}
+
+.floating-orb:nth-of-type(2) {
+  animation-duration: 22s;
+  animation-direction: reverse;
+}
+
+.floating-orb:nth-of-type(3) {
+  animation-duration: 18s;
+}
+
+.hero-glow {
+  position: absolute;
+  inset: -18%;
+  background:
+    radial-gradient(
+      34rem 34rem at var(--pointer-x, 50%) var(--pointer-y, 20%),
+      rgba(194, 129, 255, 0.26),
+      transparent 60%
+    ),
+    radial-gradient(26rem 26rem at 22% 18%, rgba(115, 31, 183, 0.28), transparent 62%),
+    radial-gradient(28rem 28rem at 84% 28%, rgba(218, 164, 255, 0.18), transparent 60%);
+  animation: pulse-cloud 12s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+
+.score-ring {
+  background:
+    radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.22), transparent 35%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.01));
+}
+
+@keyframes drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(18px, -24px, 0) scale(1.08);
+  }
+}
+
+@keyframes pulse-cloud {
+  0% {
+    transform: scale(1) rotate(0deg);
+  }
+  100% {
+    transform: scale(1.08) rotate(3deg);
+  }
 }

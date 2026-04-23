@@ -1,8 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
-
-// ---------- Types ----------
+import { useEffect, useRef, useState } from "react";
 
 type ScrapeResult = {
   markdown: string;
@@ -42,7 +40,10 @@ type AgentState = {
   error: string | null;
 };
 
-// ---------- Constants ----------
+type Pointer = {
+  x: number;
+  y: number;
+};
 
 const HEURISTICS_ORDER: Heuristic[] = [
   "visual_hierarchy",
@@ -56,14 +57,20 @@ const HEURISTIC_LABELS: Record<Heuristic, string> = {
   visual_hierarchy: "Visual Hierarchy",
   microcopy: "Microcopy",
   accessibility: "Accessibility",
-  mobile_responsiveness: "Mobile",
-  conversion: "Conversion",
+  mobile_responsiveness: "Mobile Systems",
+  conversion: "Conversion Flow",
+};
+
+const HEURISTIC_BLURBS: Record<Heuristic, string> = {
+  visual_hierarchy: "How clearly the interface guides attention.",
+  microcopy: "Whether the words are clear, sharp, and useful.",
+  accessibility: "Contrast, semantics, and cognitive inclusivity risks.",
+  mobile_responsiveness: "How well the layout should hold on smaller screens.",
+  conversion: "Friction, trust, and CTA effectiveness.",
 };
 
 const MAX_FILE_BYTES = 4_500_000;
 const MAX_IMAGE_DIMENSION = 7800;
-
-// ---------- Helpers ----------
 
 function initialAgents(): Record<Heuristic, AgentState> {
   const entries = HEURISTICS_ORDER.map(
@@ -100,8 +107,6 @@ async function resizeForClaude(file: File, maxDim: number): Promise<string> {
   return canvas.toDataURL("image/jpeg", 0.9);
 }
 
-// ---------- Page ----------
-
 export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -111,12 +116,24 @@ export default function Home() {
   const [dragging, setDragging] = useState(false);
 
   const [url, setUrl] = useState("");
+  const [pointer, setPointer] = useState<Pointer>({ x: 48, y: 18 });
 
   const [scrapeStatus, setScrapeStatus] = useState<Status>("idle");
   const [scrape, setScrape] = useState<ScrapeResult | null>(null);
   const [scrapeError, setScrapeError] = useState<string | null>(null);
 
   const [agents, setAgents] = useState<Record<Heuristic, AgentState>>(initialAgents());
+
+  useEffect(() => {
+    const handleMove = (event: MouseEvent) => {
+      const x = (event.clientX / window.innerWidth) * 100;
+      const y = (event.clientY / window.innerHeight) * 100;
+      setPointer({ x, y });
+    };
+
+    window.addEventListener("pointermove", handleMove);
+    return () => window.removeEventListener("pointermove", handleMove);
+  }, []);
 
   async function handleFile(f: File) {
     setFileError(null);
@@ -130,6 +147,7 @@ export default function Home() {
       );
       return;
     }
+
     setFile(f);
     try {
       const processed = await resizeForClaude(f, MAX_IMAGE_DIMENSION);
@@ -153,7 +171,6 @@ export default function Home() {
 
     const trimmedUrl = url.trim();
 
-    // Reset everything.
     setScrape(null);
     setScrapeError(null);
     setScrapeStatus(trimmedUrl ? "loading" : "idle");
@@ -165,7 +182,6 @@ export default function Home() {
       return next;
     });
 
-    // Step 1: scrape for context if a URL was provided. Agents still run if this fails.
     let scrapeData: ScrapeResult | null = null;
     if (trimmedUrl) {
       try {
@@ -186,7 +202,6 @@ export default function Home() {
       }
     }
 
-    // Step 2: fire all 5 specialist agents in parallel. Each updates its own state.
     HEURISTICS_ORDER.forEach((heuristic) => {
       fetch("/api/analyze", {
         method: "POST",
@@ -231,185 +246,462 @@ export default function Home() {
       ? Math.round(completedScores.reduce((a, b) => a + b, 0) / completedScores.length)
       : null;
 
+  const completedCount = HEURISTICS_ORDER.filter((h) => agents[h].status === "done").length;
+
   return (
-    <main className="min-h-screen bg-neutral-950 text-neutral-100 px-6 py-16">
-      <div className="w-full max-w-3xl mx-auto">
-        <header className="mb-10">
-          <p className="text-xs uppercase tracking-[0.2em] text-neutral-500 mb-3">
-            UX Audit · v0.5
-          </p>
-          <h1 className="text-4xl md:text-5xl font-semibold tracking-tight mb-4">
-            Five specialists. One screenshot. One minute.
-          </h1>
-          <p className="text-neutral-400 text-lg leading-relaxed">
-            Drop a screenshot of any interface — live website, internal
-            dashboard, Figma mockup. Five AI specialists review it in parallel
-            for visual hierarchy, microcopy, accessibility, mobile readiness,
-            and conversion patterns.
-          </p>
-        </header>
+    <main
+      className="relative min-h-screen overflow-hidden"
+      style={
+        {
+          ["--pointer-x" as string]: `${pointer.x}%`,
+          ["--pointer-y" as string]: `${pointer.y}%`,
+        } as React.CSSProperties
+      }
+    >
+      <div className="hero-glow" />
+      <div className="noise-overlay" />
+      <div className="ambient-grid absolute inset-0 opacity-40" />
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div
-            onClick={() => fileInputRef.current?.click()}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragging(true);
-            }}
-            onDragEnter={(e) => {
-              e.preventDefault();
-              setDragging(true);
-            }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragging(false);
-              const f = e.dataTransfer.files[0];
-              if (f) handleFile(f);
-            }}
-            className={`relative rounded-lg border-2 border-dashed cursor-pointer transition ${
-              dragging
-                ? "border-neutral-300 bg-neutral-900"
-                : "border-neutral-800 hover:border-neutral-700 bg-neutral-900/40"
-            } ${filePreview ? "p-4" : "p-12"}`}
-          >
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              hidden
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) handleFile(f);
-              }}
-            />
+      <div className="floating-orb left-[8%] top-[12%] h-40 w-40 bg-[#521684]/30" />
+      <div className="floating-orb right-[10%] top-[18%] h-56 w-56 bg-[#b165ea]/24" />
+      <div className="floating-orb bottom-[14%] left-[28%] h-44 w-44 bg-[#d69dfb]/18" />
 
-            {filePreview ? (
-              <div className="flex items-center gap-4">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={filePreview}
-                  alt="Upload preview"
-                  className="w-20 h-20 object-cover rounded border border-neutral-800 shrink-0"
+      <div className="relative mx-auto flex min-h-screen w-full max-w-[1600px] flex-col px-4 py-4 sm:px-6 lg:px-8">
+        <section className="glass-panel relative overflow-hidden rounded-[30px] px-6 py-8 sm:px-8 sm:py-10 lg:px-10">
+          <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.06),transparent_35%,transparent_65%,rgba(255,255,255,0.04))]" />
+          <div className="relative">
+            <header className="mb-10 flex flex-col gap-8 border-b border-white/10 pb-8 lg:flex-row lg:items-end lg:justify-between">
+              <div className="max-w-3xl">
+                <div className="mb-5 inline-flex items-center gap-3 rounded-full border border-white/10 bg-white/6 px-4 py-2 text-[11px] uppercase tracking-[0.28em] text-[#d8b1ff]">
+                  Parallel UX Audit
+                  <span className="h-1 w-1 rounded-full bg-[#f6e5ff]" />
+                  Portfolio Edition
+                </div>
+                <h1 className="max-w-4xl text-5xl font-semibold tracking-[-0.05em] text-white sm:text-6xl xl:text-7xl">
+                  Turn one interface screenshot into a cinematic, multi-agent UX teardown.
+                </h1>
+                <p className="mt-5 max-w-2xl text-base leading-8 text-[#d6c2f0] sm:text-lg">
+                  Upload a product screen, add a URL if you want richer context, and let five
+                  specialized reviewers audit hierarchy, copy, accessibility, mobile readiness,
+                  and conversion friction in parallel.
+                </p>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-3 lg:w-[420px]">
+                <StatPill label="Agents" value="05" detail="running in parallel" />
+                <StatPill label="Signals" value="100" detail="weighted score" />
+                <StatPill
+                  label="Context"
+                  value={url.trim() ? "URL+" : "IMG"}
+                  detail={url.trim() ? "screenshot + scrape" : "screenshot only"}
                 />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-neutral-200 truncate">{file?.name}</p>
-                  <p className="text-xs text-neutral-500 mt-1">
-                    {file && `${(file.size / 1000).toFixed(0)} KB`}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      clearFile();
+              </div>
+            </header>
+
+            <div className="grid gap-6 xl:grid-cols-[430px_minmax(0,1fr)]">
+              <aside className="xl:sticky xl:top-6 xl:self-start">
+                <form
+                  onSubmit={handleSubmit}
+                  className="glass-panel rounded-[28px] p-5 sm:p-6"
+                >
+                  <div className="mb-6 flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.22em] text-[#bb8df0]">
+                        Control Deck
+                      </p>
+                      <h2 className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-white">
+                        Stage the audit
+                      </h2>
+                    </div>
+                    <div className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-[11px] uppercase tracking-[0.2em] text-[#f5d8ff]">
+                      {isRunning ? "Live" : "Ready"}
+                    </div>
+                  </div>
+
+                  <div
+                    onClick={() => fileInputRef.current?.click()}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setDragging(true);
                     }}
-                    className="text-xs text-neutral-500 hover:text-neutral-200 mt-2 underline"
+                    onDragEnter={(e) => {
+                      e.preventDefault();
+                      setDragging(true);
+                    }}
+                    onDragLeave={() => setDragging(false)}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setDragging(false);
+                      const f = e.dataTransfer.files[0];
+                      if (f) void handleFile(f);
+                    }}
+                    className={`group relative cursor-pointer overflow-hidden rounded-[24px] border p-4 ${
+                      dragging
+                        ? "border-[#d7a7ff]/60 bg-white/10"
+                        : "border-white/10 bg-white/[0.04] hover:border-[#c897ff]/40 hover:bg-white/[0.06]"
+                    } ${filePreview ? "min-h-[260px]" : "min-h-[280px]"}`}
                   >
-                    Replace
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="text-center">
-                <p className="text-neutral-300 text-base">
-                  Drop a screenshot here, or{" "}
-                  <span className="underline">click to browse</span>
-                </p>
-                <p className="text-neutral-500 text-xs mt-2">
-                  PNG, JPEG, or WebP · max 4.5 MB
-                </p>
-              </div>
-            )}
-          </div>
+                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(213,168,255,0.18),transparent_45%)] opacity-80" />
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      hidden
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) void handleFile(f);
+                      }}
+                    />
 
-          {fileError && <p className="text-xs text-red-400">{fileError}</p>}
+                    {filePreview ? (
+                      <div className="relative flex h-full flex-col gap-4">
+                        <div className="overflow-hidden rounded-[18px] border border-white/10 bg-black/30">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={filePreview}
+                            alt="Upload preview"
+                            className="h-[220px] w-full object-cover object-top"
+                          />
+                        </div>
+                        <div className="flex items-end justify-between gap-4">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm text-white">{file?.name}</p>
+                            <p className="mt-1 text-xs text-[#caacfa]">
+                              {file && `${(file.size / 1000).toFixed(0)} KB`} · ready for analysis
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              clearFile();
+                            }}
+                            className="rounded-full border border-white/10 bg-white/8 px-3 py-2 text-xs uppercase tracking-[0.18em] text-white hover:bg-white/14"
+                          >
+                            Replace
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="relative flex h-full flex-col justify-between">
+                        <div className="space-y-3">
+                          <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-white/10 text-xl text-white">
+                            +
+                          </div>
+                          <div>
+                            <p className="text-xl font-medium tracking-[-0.03em] text-white">
+                              Drop a screenshot or click to browse
+                            </p>
+                            <p className="mt-2 max-w-sm text-sm leading-6 text-[#d0b4f3]">
+                              Bring in a landing page, dashboard, checkout flow, internal tool, or
+                              Figma frame. PNG, JPEG, and WebP are supported up to 4.5 MB.
+                            </p>
+                          </div>
+                        </div>
 
-          <input
-            type="url"
-            placeholder="Page URL (optional — adds context to the analysis)"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            disabled={isRunning}
-            className="w-full px-4 py-3 rounded-lg bg-neutral-900 border border-neutral-800 focus:border-neutral-600 focus:outline-none text-base disabled:opacity-50"
-          />
+                        <div className="flex flex-wrap gap-2 text-[11px] uppercase tracking-[0.18em] text-[#edd7ff]">
+                          <span className="rounded-full border border-white/10 bg-black/20 px-3 py-2">
+                            Portfolio-grade output
+                          </span>
+                          <span className="rounded-full border border-white/10 bg-black/20 px-3 py-2">
+                            Instant specialist review
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
 
-          <button
-            type="submit"
-            disabled={!canSubmit}
-            className="w-full sm:w-auto px-6 py-3 rounded-lg bg-white text-neutral-950 font-medium hover:bg-neutral-200 transition disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {isRunning ? "Specialists reviewing…" : "Run audit"}
-          </button>
-        </form>
+                  {fileError && <p className="mt-3 text-sm text-rose-300">{fileError}</p>}
 
-        {hasResults && (
-          <section className="mt-10 space-y-6">
-            <Scorecard agents={agents} overall={overallScore} />
-
-            {scrapeStatus !== "idle" && (
-              <div className="text-xs text-neutral-500 flex items-center gap-2">
-                <span>
-                  Context:{" "}
-                  {scrapeStatus === "loading" && "fetching page content…"}
-                  {scrapeStatus === "done" && `fetched ${scrape?.markdown.length.toLocaleString()} chars`}
-                  {scrapeStatus === "error" && (
-                    <span className="text-amber-400">
-                      scrape failed ({scrapeError}) — agents running on screenshot alone
+                  <label className="mt-5 block">
+                    <span className="mb-2 block text-xs uppercase tracking-[0.2em] text-[#bb8df0]">
+                      Optional URL
                     </span>
-                  )}
-                </span>
-              </div>
-            )}
+                    <input
+                      type="url"
+                      placeholder="https://example.com"
+                      value={url}
+                      onChange={(e) => setUrl(e.target.value)}
+                      disabled={isRunning}
+                      className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-4 text-sm text-white outline-none placeholder:text-[#9f85c6] focus:border-[#cb99ff]/60 disabled:opacity-50"
+                    />
+                    <p className="mt-2 text-xs leading-5 text-[#a98dce]">
+                      Add the live page if you want copy and structure context scraped alongside the
+                      screenshot.
+                    </p>
+                  </label>
 
-            <div className="space-y-4">
-              {HEURISTICS_ORDER.map((h) => (
-                <div key={h} id={`agent-${h}`}>
-                  <AgentCard state={agents[h]} label={HEURISTIC_LABELS[h]} />
+                  <button
+                    type="submit"
+                    disabled={!canSubmit}
+                    className="mt-6 inline-flex w-full items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#f4e8ff_0%,#d59eff_42%,#8f41dd_100%)] px-5 py-4 text-sm font-semibold uppercase tracking-[0.18em] text-[#16051f] shadow-[0_18px_50px_rgba(162,91,232,0.35)] hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:scale-100"
+                  >
+                    {isRunning ? "Agents are reviewing" : "Run full audit"}
+                  </button>
+
+                  <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                    <MiniMetric
+                      label="Progress"
+                      value={`${completedCount}/${HEURISTICS_ORDER.length}`}
+                      detail={isRunning ? "specialists active" : "specialists waiting"}
+                    />
+                    <MiniMetric
+                      label="Context mode"
+                      value={scrapeStatus === "done" ? "Enriched" : "Visual"}
+                      detail={
+                        scrapeStatus === "done"
+                          ? "screenshot plus page scrape"
+                          : "analysis from screenshot"
+                      }
+                    />
+                  </div>
+                </form>
+              </aside>
+
+              <section className="space-y-6">
+                <div className="glass-panel rounded-[28px] p-6 sm:p-7">
+                  <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+                    <div className="max-w-2xl">
+                      <p className="text-xs uppercase tracking-[0.22em] text-[#bb8df0]">
+                        Audit Console
+                      </p>
+                      <h2 className="mt-2 text-3xl font-semibold tracking-[-0.04em] text-white">
+                        Multi-agent results, scored and organized.
+                      </h2>
+                      <p className="mt-3 text-sm leading-6 text-[#ceb5f3]">
+                        Each specialist returns a summary, a numeric score, and concrete fixes. Use
+                        the scoreboard to jump between findings and scan the overall health of the
+                        interface.
+                      </p>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <StatusChip
+                        label="Scrape"
+                        value={
+                          scrapeStatus === "loading"
+                            ? "Fetching"
+                            : scrapeStatus === "done"
+                            ? "Attached"
+                            : scrapeStatus === "error"
+                            ? "Failed"
+                            : "Skipped"
+                        }
+                      />
+                      <StatusChip
+                        label="Overall"
+                        value={overallScore !== null ? `${overallScore}/100` : "Pending"}
+                      />
+                      <StatusChip
+                        label="State"
+                        value={isRunning ? "In Flight" : hasResults ? "Ready" : "Waiting"}
+                      />
+                    </div>
+                  </div>
                 </div>
-              ))}
+
+                {hasResults ? (
+                  <>
+                    <Scorecard agents={agents} overall={overallScore} />
+
+                    {scrapeStatus !== "idle" && (
+                      <div className="glass-panel rounded-[22px] px-5 py-4 text-sm text-[#d7c0f7]">
+                        {scrapeStatus === "loading" && "Fetching page context to strengthen the audit."}
+                        {scrapeStatus === "done" &&
+                          `Page context attached with ${scrape?.markdown.length.toLocaleString()} characters of scraped content.`}
+                        {scrapeStatus === "error" &&
+                          `Scrape failed (${scrapeError}). The specialists are still reviewing the screenshot alone.`}
+                      </div>
+                    )}
+
+                    <div className="grid gap-5">
+                      {HEURISTICS_ORDER.map((h) => (
+                        <div key={h} id={`agent-${h}`}>
+                          <AgentCard state={agents[h]} label={HEURISTIC_LABELS[h]} />
+                        </div>
+                      ))}
+                    </div>
+
+                    {scrape && (
+                      <details className="glass-panel overflow-hidden rounded-[24px]">
+                        <summary className="cursor-pointer px-5 py-4 text-sm uppercase tracking-[0.22em] text-[#d6b2ff] hover:text-white">
+                          Inspect scraped context
+                        </summary>
+                        <div className="space-y-5 border-t border-white/10 px-5 py-5">
+                          {scrape.title && (
+                            <div>
+                              <p className="text-xs uppercase tracking-[0.18em] text-[#b892ea]">
+                                Title
+                              </p>
+                              <p className="mt-2 text-white">{scrape.title}</p>
+                            </div>
+                          )}
+                          {scrape.description && (
+                            <div>
+                              <p className="text-xs uppercase tracking-[0.18em] text-[#b892ea]">
+                                Description
+                              </p>
+                              <p className="mt-2 text-sm leading-6 text-[#d8c4f5]">
+                                {scrape.description}
+                              </p>
+                            </div>
+                          )}
+                          <pre className="overflow-auto rounded-2xl border border-white/10 bg-black/30 p-4 font-mono text-xs leading-6 text-[#d5c8eb] whitespace-pre-wrap">
+                            {scrape.markdown.slice(0, 1500)}
+                            {scrape.markdown.length > 1500 && "\n\n... (truncated)"}
+                          </pre>
+                        </div>
+                      </details>
+                    )}
+                  </>
+                ) : (
+                  <EmptyState />
+                )}
+              </section>
             </div>
+          </div>
+        </section>
 
-            {scrape && (
-              <details className="rounded-lg border border-neutral-800 overflow-hidden">
-                <summary className="px-4 py-2 bg-neutral-900 border-b border-neutral-800 text-xs text-neutral-400 uppercase tracking-wider cursor-pointer hover:text-neutral-200">
-                  Scraped content · click to expand
-                </summary>
-                <div className="p-4 space-y-4">
-                  {scrape.title && (
-                    <div>
-                      <p className="text-xs text-neutral-500 uppercase tracking-wider mb-1">
-                        Title
-                      </p>
-                      <p className="text-neutral-100">{scrape.title}</p>
-                    </div>
-                  )}
-                  {scrape.description && (
-                    <div>
-                      <p className="text-xs text-neutral-500 uppercase tracking-wider mb-1">
-                        Description
-                      </p>
-                      <p className="text-neutral-300 text-sm">{scrape.description}</p>
-                    </div>
-                  )}
-                  <pre className="text-xs text-neutral-400 bg-neutral-950 border border-neutral-800 rounded p-3 max-h-80 overflow-auto whitespace-pre-wrap font-mono">
-                    {scrape.markdown.slice(0, 1500)}
-                    {scrape.markdown.length > 1500 && "\n\n… (truncated)"}
-                  </pre>
-                </div>
-              </details>
-            )}
-          </section>
-        )}
-
-        <footer className="mt-16 text-xs text-neutral-600">
-          Built by Alex Born · Powered by Claude &amp; Firecrawl
+        <footer className="px-2 pb-3 pt-5 text-center text-xs uppercase tracking-[0.24em] text-[#8f74b2]">
+          Designed for Alex Born’s portfolio case study · AI orchestration by Claude
         </footer>
       </div>
     </main>
   );
 }
 
-// ---------- Components ----------
+function StatPill({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+}) {
+  return (
+    <div className="rounded-[22px] border border-white/10 bg-black/20 px-4 py-4">
+      <p className="text-[10px] uppercase tracking-[0.22em] text-[#af8ad9]">{label}</p>
+      <p className="mt-2 text-2xl font-semibold tracking-[-0.05em] text-white">{value}</p>
+      <p className="mt-1 text-xs text-[#c7afe8]">{detail}</p>
+    </div>
+  );
+}
+
+function MiniMetric({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+}) {
+  return (
+    <div className="rounded-[20px] border border-white/10 bg-black/20 px-4 py-4">
+      <p className="text-[10px] uppercase tracking-[0.22em] text-[#af8ad9]">{label}</p>
+      <p className="mt-2 text-lg font-semibold text-white">{value}</p>
+      <p className="mt-1 text-xs text-[#bfa5e2]">{detail}</p>
+    </div>
+  );
+}
+
+function StatusChip({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-[20px] border border-white/10 bg-black/20 px-4 py-3">
+      <p className="text-[10px] uppercase tracking-[0.22em] text-[#af8ad9]">{label}</p>
+      <p className="mt-1 text-sm font-medium text-white">{value}</p>
+    </div>
+  );
+}
+
+function EmptyState() {
+  return (
+    <div className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
+      <div className="glass-panel rounded-[28px] p-6 sm:p-7">
+        <p className="text-xs uppercase tracking-[0.22em] text-[#bb8df0]">What You’ll Get</p>
+        <h3 className="mt-2 text-3xl font-semibold tracking-[-0.04em] text-white">
+          A dashboard that feels like an operating room for interface critique.
+        </h3>
+        <div className="mt-6 grid gap-4">
+          {HEURISTICS_ORDER.map((heuristic, index) => (
+            <div
+              key={heuristic}
+              className="rounded-[22px] border border-white/10 bg-black/20 p-4"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-[10px] uppercase tracking-[0.22em] text-[#af8ad9]">
+                    Specialist {String(index + 1).padStart(2, "0")}
+                  </p>
+                  <h4 className="mt-2 text-lg font-medium text-white">
+                    {HEURISTIC_LABELS[heuristic]}
+                  </h4>
+                  <p className="mt-2 max-w-xl text-sm leading-6 text-[#cfb9ef]">
+                    {HEURISTIC_BLURBS[heuristic]}
+                  </p>
+                </div>
+                <div className="score-ring flex h-14 w-14 items-center justify-center rounded-full border border-white/10 text-sm font-semibold text-white">
+                  --
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="glass-panel rounded-[28px] p-6 sm:p-7">
+        <p className="text-xs uppercase tracking-[0.22em] text-[#bb8df0]">Run Sequence</p>
+        <div className="mt-5 space-y-4">
+          <SequenceStep
+            step="01"
+            title="Upload a frame"
+            body="Drop in a screenshot from a live product, prototype, or internal tool."
+          />
+          <SequenceStep
+            step="02"
+            title="Attach optional context"
+            body="Provide a URL to enrich the review with scraped title, description, and copy."
+          />
+          <SequenceStep
+            step="03"
+            title="Launch the reviewers"
+            body="Five specialist prompts fire in parallel and each returns its own critique."
+          />
+          <SequenceStep
+            step="04"
+            title="Prioritize fixes"
+            body="Scan the scorecard, open findings, and turn the output into design actions."
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SequenceStep({
+  step,
+  title,
+  body,
+}: {
+  step: string;
+  title: string;
+  body: string;
+}) {
+  return (
+    <div className="rounded-[22px] border border-white/10 bg-black/20 p-4">
+      <div className="flex items-start gap-4">
+        <div className="score-ring flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-white/10 text-sm font-semibold text-white">
+          {step}
+        </div>
+        <div>
+          <h4 className="text-base font-medium text-white">{title}</h4>
+          <p className="mt-2 text-sm leading-6 text-[#cfb9ef]">{body}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function Scorecard({
   agents,
@@ -419,19 +711,26 @@ function Scorecard({
   overall: number | null;
 }) {
   return (
-    <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-5">
-      <div className="flex items-center justify-between gap-4 mb-4 flex-wrap">
-        <p className="text-xs text-neutral-500 uppercase tracking-[0.15em]">
-          Overall
-        </p>
-        <div className="flex items-center gap-3">
-          <span className="text-3xl font-semibold tabular-nums text-neutral-100">
-            {overall !== null ? overall : "—"}
-          </span>
-          <span className="text-xs text-neutral-500">/ 100</span>
+    <div className="glass-panel rounded-[28px] p-6 sm:p-7">
+      <div className="flex flex-col gap-6 border-b border-white/10 pb-6 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p className="text-xs uppercase tracking-[0.22em] text-[#bb8df0]">Overall score</p>
+          <div className="mt-3 flex items-end gap-3">
+            <span className="text-6xl font-semibold tracking-[-0.06em] text-white">
+              {overall !== null ? overall : "--"}
+            </span>
+            <span className="pb-2 text-sm uppercase tracking-[0.18em] text-[#af8ad9]">
+              out of 100
+            </span>
+          </div>
         </div>
+        <p className="max-w-lg text-sm leading-6 text-[#cfb9ef]">
+          Jump into any specialist review below. Scores are averaged from completed agents only,
+          so the overall number sharpens as more responses arrive.
+        </p>
       </div>
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+
+      <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         {HEURISTICS_ORDER.map((h) => (
           <button
             key={h}
@@ -441,12 +740,18 @@ function Scorecard({
                 .getElementById(`agent-${h}`)
                 ?.scrollIntoView({ behavior: "smooth", block: "start" })
             }
-            className="flex flex-col items-center gap-1 py-2 rounded hover:bg-neutral-800/50 transition"
+            className="rounded-[22px] border border-white/10 bg-black/20 p-4 text-left hover:border-[#cf9eff]/40 hover:bg-white/[0.05]"
           >
-            <ScoreDot state={agents[h]} />
-            <span className="text-[10px] text-neutral-400 uppercase tracking-wider text-center">
-              {HEURISTIC_LABELS[h]}
-            </span>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.22em] text-[#af8ad9]">
+                  Specialist
+                </p>
+                <p className="mt-2 text-base font-medium text-white">{HEURISTIC_LABELS[h]}</p>
+              </div>
+              <ScoreDot state={agents[h]} />
+            </div>
+            <p className="mt-4 text-sm leading-6 text-[#cfb9ef]">{HEURISTIC_BLURBS[h]}</p>
           </button>
         ))}
       </div>
@@ -457,58 +762,68 @@ function Scorecard({
 function ScoreDot({ state }: { state: AgentState }) {
   if (state.status === "loading") {
     return (
-      <div className="w-12 h-12 rounded-full border-2 border-dashed border-neutral-700 animate-pulse" />
+      <div className="score-ring flex h-14 w-14 items-center justify-center rounded-full border border-dashed border-[#b586eb] text-xs uppercase tracking-[0.16em] text-[#e4cbff] animate-pulse">
+        ...
+      </div>
     );
   }
+
   if (state.status === "error") {
     return (
-      <div className="w-12 h-12 rounded-full bg-neutral-950 ring-2 ring-red-500/40 flex items-center justify-center">
-        <span className="text-red-300 text-lg">!</span>
+      <div className="score-ring flex h-14 w-14 items-center justify-center rounded-full border border-rose-400/30 text-sm font-semibold text-rose-200">
+        !
       </div>
     );
   }
+
   if (state.status === "done" && state.analysis) {
     const score = state.analysis.score;
-    const tier =
+    const tone =
       score >= 85
-        ? { ring: "ring-emerald-500/50", text: "text-emerald-300" }
+        ? "border-emerald-300/30 text-emerald-200"
         : score >= 70
-        ? { ring: "ring-green-500/50", text: "text-green-300" }
+        ? "border-lime-300/30 text-lime-200"
         : score >= 55
-        ? { ring: "ring-amber-500/50", text: "text-amber-300" }
+        ? "border-amber-300/30 text-amber-200"
         : score >= 40
-        ? { ring: "ring-orange-500/50", text: "text-orange-300" }
-        : { ring: "ring-red-500/50", text: "text-red-300" };
+        ? "border-orange-300/30 text-orange-200"
+        : "border-rose-300/30 text-rose-200";
+
     return (
       <div
-        className={`w-12 h-12 rounded-full bg-neutral-950 ring-2 ${tier.ring} flex items-center justify-center`}
+        className={`score-ring flex h-14 w-14 items-center justify-center rounded-full border text-base font-semibold ${tone}`}
       >
-        <span className={`text-base font-semibold ${tier.text} tabular-nums`}>
-          {score}
-        </span>
+        {score}
       </div>
     );
   }
-  return <div className="w-12 h-12 rounded-full border-2 border-neutral-800" />;
+
+  return (
+    <div className="score-ring flex h-14 w-14 items-center justify-center rounded-full border border-white/10 text-xs uppercase tracking-[0.16em] text-[#b599d7]">
+      --
+    </div>
+  );
 }
 
 function AgentCard({ state, label }: { state: AgentState; label: string }) {
   if (state.status === "loading") {
     return (
-      <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-5">
-        <div className="flex items-center justify-between gap-4">
+      <div className="glass-panel rounded-[28px] p-6">
+        <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-xs text-neutral-500 uppercase tracking-[0.15em] mb-1">
-              Specialist
-            </p>
-            <h2 className="text-lg text-neutral-100 font-medium">{label}</h2>
+            <p className="text-xs uppercase tracking-[0.22em] text-[#bb8df0]">Specialist</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-white">
+              {label}
+            </h2>
           </div>
-          <span className="text-xs text-amber-400 animate-pulse">Reviewing…</span>
+          <div className="rounded-full border border-[#c99aff]/20 bg-[#a866e8]/10 px-3 py-2 text-xs uppercase tracking-[0.18em] text-[#f2dcff]">
+            Reviewing
+          </div>
         </div>
-        <div className="mt-4 space-y-2">
-          <div className="h-3 bg-neutral-800 rounded animate-pulse" />
-          <div className="h-3 bg-neutral-800 rounded animate-pulse w-5/6" />
-          <div className="h-3 bg-neutral-800 rounded animate-pulse w-4/6" />
+        <div className="mt-6 space-y-3">
+          <div className="h-4 rounded-full bg-white/8 animate-pulse" />
+          <div className="h-4 w-11/12 rounded-full bg-white/8 animate-pulse" />
+          <div className="h-4 w-8/12 rounded-full bg-white/8 animate-pulse" />
         </div>
       </div>
     );
@@ -516,12 +831,19 @@ function AgentCard({ state, label }: { state: AgentState; label: string }) {
 
   if (state.status === "error") {
     return (
-      <div className="rounded-lg border border-red-900/60 bg-red-950/30 p-5">
-        <div className="flex items-center justify-between gap-4 mb-2">
-          <h2 className="text-lg text-red-200 font-medium">{label}</h2>
-          <span className="text-xs text-red-300">Failed</span>
+      <div className="rounded-[28px] border border-rose-400/20 bg-rose-950/20 p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-xs uppercase tracking-[0.22em] text-rose-200/70">Specialist</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-rose-100">
+              {label}
+            </h2>
+          </div>
+          <div className="rounded-full border border-rose-300/20 bg-rose-400/10 px-3 py-2 text-xs uppercase tracking-[0.18em] text-rose-100">
+            Failed
+          </div>
         </div>
-        <p className="text-xs text-red-300 break-words">{state.error}</p>
+        <p className="mt-4 text-sm leading-6 text-rose-100/90">{state.error}</p>
       </div>
     );
   }
@@ -535,87 +857,71 @@ function AgentCard({ state, label }: { state: AgentState; label: string }) {
 
 function AnalysisCard({ analysis }: { analysis: Analysis }) {
   return (
-    <div className="rounded-lg border border-neutral-800 overflow-hidden">
-      <div className="px-5 py-4 bg-neutral-900 border-b border-neutral-800 flex items-start justify-between gap-4">
-        <div>
-          <p className="text-xs text-neutral-500 uppercase tracking-[0.15em] mb-1">
-            Specialist
-          </p>
-          <h2 className="text-lg text-neutral-100 font-medium">
+    <div className="glass-panel overflow-hidden rounded-[28px]">
+      <div className="flex flex-col gap-5 border-b border-white/10 px-6 py-6 sm:flex-row sm:items-start sm:justify-between">
+        <div className="max-w-2xl">
+          <p className="text-xs uppercase tracking-[0.22em] text-[#bb8df0]">Specialist</p>
+          <h2 className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-white">
             {analysis.heuristic_label}
           </h2>
+          <p className="mt-3 text-sm leading-7 text-[#d2bbed]">{analysis.summary}</p>
         </div>
         <ScoreBadge score={analysis.score} />
       </div>
-      <div className="p-5 space-y-5">
-        <p className="text-neutral-200 text-base leading-relaxed">
-          {analysis.summary}
-        </p>
-        <div className="space-y-3">
-          {analysis.findings.map((f, i) => (
-            <FindingCard key={i} finding={f} />
-          ))}
-        </div>
+      <div className="grid gap-4 px-6 py-6">
+        {analysis.findings.map((f, i) => (
+          <FindingCard key={i} finding={f} />
+        ))}
       </div>
     </div>
   );
 }
 
 function ScoreBadge({ score }: { score: number }) {
-  const tier =
+  const tone =
     score >= 85
-      ? { ring: "ring-emerald-500/40", text: "text-emerald-300" }
+      ? "border-emerald-300/30 text-emerald-200"
       : score >= 70
-      ? { ring: "ring-green-500/40", text: "text-green-300" }
+      ? "border-lime-300/30 text-lime-200"
       : score >= 55
-      ? { ring: "ring-amber-500/40", text: "text-amber-300" }
+      ? "border-amber-300/30 text-amber-200"
       : score >= 40
-      ? { ring: "ring-orange-500/40", text: "text-orange-300" }
-      : { ring: "ring-red-500/40", text: "text-red-300" };
+      ? "border-orange-300/30 text-orange-200"
+      : "border-rose-300/30 text-rose-200";
 
   return (
     <div
-      className={`shrink-0 w-16 h-16 rounded-full bg-neutral-950 ring-2 ${tier.ring} flex items-center justify-center`}
+      className={`score-ring flex h-24 w-24 shrink-0 items-center justify-center rounded-full border text-3xl font-semibold ${tone}`}
     >
-      <span className={`text-2xl font-semibold ${tier.text} tabular-nums`}>
-        {score}
-      </span>
+      {score}
     </div>
   );
 }
 
 function FindingCard({ finding }: { finding: Finding }) {
   const severityStyle: Record<Severity, string> = {
-    critical: "bg-red-500/10 text-red-300 border-red-900/60",
-    major: "bg-amber-500/10 text-amber-300 border-amber-900/60",
-    minor: "bg-neutral-800 text-neutral-300 border-neutral-700",
+    critical: "border-rose-300/18 bg-rose-500/10 text-rose-100",
+    major: "border-amber-300/18 bg-amber-500/10 text-amber-50",
+    minor: "border-white/10 bg-black/20 text-white",
   };
 
   return (
-    <div className="border border-neutral-800 rounded-lg p-4 space-y-3 bg-neutral-950">
-      <div className="flex items-start gap-3 flex-wrap">
-        <span
-          className={`px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.1em] rounded border ${severityStyle[finding.severity]}`}
-        >
+    <div className={`rounded-[24px] border p-5 ${severityStyle[finding.severity]}`}>
+      <div className="flex flex-wrap items-start gap-3">
+        <span className="rounded-full border border-current/15 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em]">
           {finding.severity}
         </span>
-        <h3 className="text-neutral-100 font-medium leading-snug flex-1 min-w-0">
-          {finding.issue}
-        </h3>
+        <h3 className="flex-1 text-lg font-medium leading-7">{finding.issue}</h3>
       </div>
-      <div className="space-y-2 text-sm pl-1">
-        <p className="text-neutral-400">
-          <span className="text-neutral-500 text-xs uppercase tracking-wider mr-2">
-            Evidence
-          </span>
-          {finding.evidence}
-        </p>
-        <p className="text-neutral-200">
-          <span className="text-neutral-500 text-xs uppercase tracking-wider mr-2">
-            Fix
-          </span>
-          {finding.recommendation}
-        </p>
+      <div className="mt-5 grid gap-4 lg:grid-cols-2">
+        <div className="rounded-[18px] border border-white/10 bg-black/20 p-4">
+          <p className="text-[10px] uppercase tracking-[0.22em] text-[#ba97e2]">Evidence</p>
+          <p className="mt-3 text-sm leading-6 text-[#dbc9ef]">{finding.evidence}</p>
+        </div>
+        <div className="rounded-[18px] border border-white/10 bg-black/20 p-4">
+          <p className="text-[10px] uppercase tracking-[0.22em] text-[#ba97e2]">Recommended fix</p>
+          <p className="mt-3 text-sm leading-6 text-[#f3ebff]">{finding.recommendation}</p>
+        </div>
       </div>
     </div>
   );
